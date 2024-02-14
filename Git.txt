@@ -1,0 +1,14 @@
+Git Tutorial
+
+
+ 1 Starting your work: Open your files and work on your project just like you normally would.                                                                     
+   2 Saving your work: Once you've made some changes that you would like to save, you'll do the following in your Terminal or Command Prompt:                       
+      • Navigate into your project's directory using the cd (change directory) command.                                                                             
+      • Type git status. This will show you what files have been changed.                                                                                           
+      • Type git add . This adds all changed files to the staging area. If you only want to add some files, you can replace . with the filename(s).                 
+      • Type git commit -m "Short message describing what changes you made". This creates a save point or snapshot of your current files.                           
+                                                                                                                                                                    
+  Now your work is saved locally on your computer in Git. You can repeat these steps whenever you've made changes that you want to save.                            
+                                                                                                                                                                    
+   3 Backing up your work on GitHub: To save your work in the GitHub cloud (like a backup of your saves), take these additional steps:                              
+   • Type git push. This will push your saved snapshots to GitHub. 

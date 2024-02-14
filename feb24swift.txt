@@ -1,0 +1,1463 @@
+//
+//  feb10.swift
+//  jan20
+//
+//  Created by Thomas Amosson on 2024.02.10.
+//
+
+import Foundation
+import SwiftUI
+import MediaPlayer
+import AVKit
+import Combine
+import SSSwiftUISpinnerButton
+import ScalingHeaderScrollView
+import ShazamKit
+
+
+struct WelcomeView: View {
+    @State private var songTitle: String = ""
+    @State private var artistName: String = ""
+    @State private var songData: Song?
+    @State private var videoFilePath: URL?
+    @State private var displayedImage: UIImage?
+    @State private var isLoading: Bool = false
+    @State private var selectedURLIndex = 0
+    let urls = ["http://192.168.1.114:8000/process_song", "http://127.0.0.1:8000/process_song", "http://167.99.113.232:8000/process_song"]
+    @Environment(\.presentationMode) var presentationMode
+    @State private var showSongDetails = false
+    @State private var isConfirming: Bool = false
+    @State private var showAlert: Bool = false
+    @State private var shouldShowSongView = false
+    @State private var selectedSong: Song?
+    @State private var isSpinnerAnimating: Bool = false
+    @State private var isShazaming: Bool = false
+    private let shazamDelegate = ShazamDelegate()
+
+    let spinnerButtonStyle = SpinnerButtonViewStyle(
+        width: 150,
+        height: 50,
+        cornerRadius: 25,
+        backgroundColor: .blue,
+        spinningStrokeColor: .white
+    )
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.black.edgesIgnoringSafeArea(.all)
+                VStack {
+                    Picker("Select URL", selection: $selectedURLIndex) {
+                        ForEach(0..<urls.count, id: \.self) { index in
+                            Text(self.urls[index]).tag(index)
+                        }
+                    }
+                    .pickerStyle(SegmentedPickerStyle())
+                    .padding()
+
+                    if isLoading {
+                        SpinnerButton(buttonAction: {
+                            // Handle the button tap action, e.g., fetching song details
+                            fetchSongData()
+                        }, isAnimating: $isSpinnerAnimating, buttonStyle: spinnerButtonStyle, animationType: .ballSpinChase(count: 8, size: 16)) {
+                            Text("Loading \(songTitle), by \(artistName)")
+                                .foregroundColor(.white)
+                                .italic()
+                        }
+                        .padding()
+                    } else {
+                        TextField("Enter Song Title", text: $songTitle)
+                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                            .padding()
+                        TextField("Enter Artist Name", text: $artistName)
+                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                            .padding()
+
+                        // Add to the body, within the VStack, where you want the Shazam button to appear
+                        Button("Shazam Current Song", action: startShazaming)
+                            .buttonStyle(CustomButtonStyle(backgroundColor: Color.orange))
+
+                        Button("Sync Current Song", action: getCurrentSong)
+                            .buttonStyle(CustomButtonStyle(backgroundColor: Color.blue))
+
+                        Button("Fetch Song Details", action: fetchSongData)
+                            .buttonStyle(CustomButtonStyle(backgroundColor: Color.green))
+
+                        if let song = songData {
+                            VStack {
+                                Text("Title: \(song.title)").foregroundColor(.white)
+                                Text("Artist: \(song.artist)").foregroundColor(.white)
+                                Text("Album: \(song.album)").foregroundColor(.white)
+                            }
+
+                            Button("Start Song") {
+                                self.showSongDetails = true
+                                self.presentationMode.wrappedValue.dismiss()
+                            }
+                            .buttonStyle(CustomButtonStyle(backgroundColor: Color.purple))
+
+                            NavigationLink(destination: SongView(song: song, displayedImage: displayedImage, videoFilePath: videoFilePath), isActive: $showSongDetails) { EmptyView() }
+                        }
+
+                        Button("Clear Current Song", action: clearCurrentSong)
+                            .buttonStyle(CustomButtonStyle(backgroundColor: Color.red))
+                    }
+                }
+                .padding()
+                .navigationTitle("Welcome")
+                .navigationBarTitleDisplayMode(.inline)
+                .alert(isPresented: $showAlert) {
+                    Alert(title: Text("No Song Playing"), message: Text("There is no currently playing song."), dismissButton: .default(Text("OK")))
+                }
+            }
+            .accentColor(.white)
+        }
+    }
+
+     private func startShazaming() {
+    guard !isShazaming else { return }
+    isShazaming = true
+    
+    // Configure the audio session for recording
+    let audioSession = AVAudioSession.sharedInstance()
+    do {
+        try audioSession.setCategory(.record, mode: .default)
+        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+    } catch {
+        print("Failed to set up audio session: \(error)")
+        self.isShazaming = false
+        return
+    }
+    
+    let audioEngine = AVAudioEngine()
+    let session = SHSession()
+    session.delegate = shazamDelegate // Set the delegate to your ShazamDelegate instance
+    
+    shazamDelegate.onMatchFound = { title, artist in
+        self.songTitle = title
+        self.artistName = artist
+        self.isShazaming = false
+    }
+    
+    shazamDelegate.onMatchNotFound = { _ in
+        self.isShazaming = false
+        // Handle the case where no match is found, e.g., show an alert
+    }
+
+    let inputNode = audioEngine.inputNode
+    let recordingFormat = inputNode.outputFormat(forBus: 0)
+    inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { (buffer, _) in
+        session.matchStreamingBuffer(buffer, at: nil)
+    }
+    
+    do {
+        try audioEngine.start()
+    } catch {
+        print("Error starting audio engine: \(error.localizedDescription)")
+        self.isShazaming = false
+    }
+}
+
+    private func getCurrentSong() {
+        let player = MPMusicPlayerController.systemMusicPlayer
+        if let mediaItem = player.nowPlayingItem {
+            let fullTitle = mediaItem.title ?? "Unknown"
+            let titleWithoutFeature = fullTitle.components(separatedBy: " (").first ?? fullTitle
+            songTitle = titleWithoutFeature
+            artistName = mediaItem.artist ?? "Unknown"
+        } else {
+            songTitle = ""
+            artistName = ""
+            showAlert = true
+        }
+    }
+
+    private func clearCurrentSong() {
+        songData = nil
+        songTitle = ""
+        artistName = ""
+        videoFilePath = nil
+        displayedImage = nil
+    }
+
+    
+    private func songDetailsView(song: Song) -> some View {
+                VStack {
+                    Text("Title: \(song.title)").foregroundColor(.white)
+                    Text("Artist: \(song.artist)").foregroundColor(.white)
+                    Text("Album: \(song.album)").foregroundColor(.white)
+                }
+            }
+    
+
+       private func fetchSongData() {
+        isLoading = true
+        sendSongData(songTitle: songTitle, artistName: artistName)
+    }
+
+    private func sendSongData(songTitle: String, artistName: String) {
+        guard let url = URL(string: urls[selectedURLIndex]) else {
+            print("Invalid URL")
+            isLoading = false
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let songData = ["song_title": songTitle, "artist_name": artistName]
+        request.httpBody = try? JSONEncoder().encode(songData)
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                print("Network request error: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    self.isLoading = false
+                }
+                return
+            }
+
+            guard let data = data, let response = response else {
+                print("No data or response received from server")
+                DispatchQueue.main.async {
+                    self.isLoading = false
+                }
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.handleMultipartResponse(data: data, response: response)
+                self.isLoading = false
+            }
+        }.resume()
+    }
+
+    
+
+
+}
+    
+
+
+
+
+
+extension WelcomeView{
+    func handleMultipartResponse(data: Data, response: URLResponse) {
+        guard let contentType = (response as? HTTPURLResponse)?.allHeaderFields["Content-Type"] as? String,
+              let boundary = contentType.split(separator: "boundary=").last else {
+            print("Error: Unable to process data")
+            return
+        }
+        let boundaryString = "--\(boundary)"
+        
+        // Split the data by the boundary
+        var parts: [Data] = []
+        var currentPart = Data()
+        data.forEach { byte in
+            currentPart.append(byte)
+            if currentPart.count > boundaryString.count,
+               String(data: currentPart.suffix(boundaryString.count), encoding: .utf8) == boundaryString {
+                parts.append(currentPart.dropLast(boundaryString.count))
+                currentPart = Data()
+            }
+        }
+        // Process each part
+        parts.forEach { part in
+            if let stringPart = String(data: part, encoding: .utf8),
+               stringPart.contains("Content-Type: application/json") {
+                decodeJSON(fromPart: stringPart)
+            } else if part.contains("Content-Type: video/mp4".data(using: .utf8)!) {
+                handleMP4Part(part)
+            } else if part.contains("Content-Type: image/jpeg".data(using: .utf8)!) {
+                handleJPGPart(part)
+            }
+        }
+    }
+
+    func decodeJSON(fromPart part: String) {
+        let lines = part.components(separatedBy: .newlines)
+        if let jsonStartIndex = lines.firstIndex(where: { $0.contains("Content-Type: application/json") }) {
+            let adjustedStartIndex = jsonStartIndex + 2
+            guard lines.indices.contains(adjustedStartIndex) else {
+                print("Error: JSON start index out of bounds")
+                return
+            }
+            let jsonLines = lines.dropFirst(adjustedStartIndex).joined(separator: "\n")
+            guard let jsonData = jsonLines.data(using: .utf8) else {
+                print("Error: Unable to convert JSON string to Data")
+                return
+            }
+            do {
+                let decodedSongData = try JSONDecoder().decode(Song.self, from: jsonData)
+                DispatchQueue.main.async {
+                    self.songData = decodedSongData
+                }
+            } catch {
+                print("Error decoding JSON: \(error)")
+            }
+        } else {
+            print("Error: JSON header not found in part")
+        }
+    }
+
+    func handleMP4Part(_ part: Data) {
+        guard let binaryData = extractBinaryData(fromPart: part) else { return }
+        if let filePath = saveToFile(binaryData: binaryData, withExtension: "mp4") {
+            DispatchQueue.main.async {
+                self.videoFilePath = filePath
+            }
+        }
+    }
+
+    func handleJPGPart(_ part: Data) {
+        guard let binaryData = extractBinaryData(fromPart: part),
+              let image = UIImage(data: binaryData) else { return }
+        DispatchQueue.main.async {
+            self.displayedImage = image
+        }
+    }
+
+    func extractBinaryData(fromPart part: Data) -> Data? {
+        guard let range = part.range(of: "\r\n\r\n".data(using: .utf8)!) else {
+            print("Error: Unable to find header terminator in part")
+            return nil
+        }
+        let binaryData = part.subdata(in: range.upperBound..<part.endIndex)
+        return binaryData
+    }
+
+    private func saveToFile(binaryData: Data, withExtension fileExtension: String) -> URL? {
+        let fileManager = FileManager.default
+        let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let fileName = UUID().uuidString + ".\(fileExtension)"
+        let filePath = documentsDirectory.appendingPathComponent(fileName)
+        do {
+            try binaryData.write(to: filePath)
+            return filePath
+        } catch {
+            print("Error saving file: \(error)")
+            return nil
+        }
+    }
+
+    func session(_ session: SHSession, didFind match: SHMatch) {
+        DispatchQueue.main.async {
+            self.isShazaming = false
+        }
+        
+        guard let matchedItem = match.mediaItems.first else {
+            print("No match found")
+            return
+        }
+        
+        DispatchQueue.main.async {
+            self.songTitle = matchedItem.title ?? "Unknown"
+            self.artistName = matchedItem.artist ?? "Unknown"
+        }
+    }
+    
+    func session(_ session: SHSession, didNotFindMatchFor signature: SHSignature, error: Error?) {
+        DispatchQueue.main.async {
+            self.isShazaming = false
+            print("No match found: \(error?.localizedDescription ?? "Unknown error")")
+        }
+    }
+}
+    
+  
+    
+
+class ShazamDelegate: NSObject, SHSessionDelegate {
+    var onMatchFound: ((String, String) -> Void)?
+    var onMatchNotFound: ((String) -> Void)?
+
+    func session(_ session: SHSession, didFind match: SHMatch) {
+        guard let matchedItem = match.mediaItems.first else {
+            print("No match found")
+            onMatchNotFound?("No match found")
+            return
+        }
+        
+        print("Match found: \(matchedItem.title ?? "Unknown") by \(matchedItem.artist ?? "Unknown")")
+        onMatchFound?(matchedItem.title ?? "Unknown", matchedItem.artist ?? "Unknown")
+    }
+    
+    func session(_ session: SHSession, didNotFindMatchFor signature: SHSignature, error: Error?) {
+        print("No match found: \(error?.localizedDescription ?? "Unknown error")")
+        onMatchNotFound?("No match found: \(error?.localizedDescription ?? "Unknown error")")
+    }
+}
+
+
+    
+    struct ConfirmationView: View {
+        @Binding var songTitle: String
+        @Binding var artistName: String
+        @Binding var isConfirming: Bool
+        let sendSongData: (String, String) -> Void
+
+        var body: some View {
+            VStack {
+                Text("Confirm Song Details")
+                    .font(.headline)
+                Text("Title: \(songTitle)")
+                Text("Artist: \(artistName)")
+                Button(action: {
+                    self.sendSongData(self.songTitle, self.artistName)
+                    self.isConfirming = false
+                }) {
+                    Text("Confirm")
+                }
+                Button(action: {
+                    self.isConfirming = false
+                }) {
+                    Text("Edit")
+                }
+            }
+        }
+    }
+
+
+
+
+
+struct CustomButtonStyle: ButtonStyle {
+    var backgroundColor: Color
+    var foregroundColor: Color = .white
+    var shadowColor: Color = .gray
+    var shadowRadius: CGFloat = 10
+    var shadowX: CGFloat = 0
+    var shadowY: CGFloat = 5
+    var cornerRadius: CGFloat = 10
+    var padding: CGFloat = 10
+    var scaleDownEffect: CGFloat = 0.9
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundColor(foregroundColor)
+            .padding(padding)
+            .background(
+                LinearGradient(gradient: Gradient(colors: [backgroundColor, backgroundColor.opacity(0.9)]), startPoint: .topLeading, endPoint: .bottomTrailing)
+            )
+            .cornerRadius(cornerRadius)
+            .shadow(color: shadowColor, radius: shadowRadius, x: shadowX, y: shadowY)
+            .scaleEffect(configuration.isPressed ? scaleDownEffect : 1.0)
+            .animation(.easeInOut(duration: 0.2))
+            .padding()
+    }
+}
+
+    
+
+struct BackgroundView: View {
+    var bgColor: Color // The background color
+    var uiImage: UIImage? // The UIImage to display
+    
+    var body: some View {
+        ZStack {
+            if let image = uiImage {
+                Image(uiImage: image) // Display the UIImage
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .blur(radius: 10) // Reduced blur for less blurriness
+                    .overlay(bgColor.opacity(0.7).brightness(-0.3)) // Darken the bgColor
+            } else {
+                Color.clear // Fallback if no image is provided
+            }
+        }
+    }
+}
+        
+ // Song data model
+ struct Song: Decodable {
+     let title: String
+     let artist: String
+     let album: String
+     let release_date: String
+     let description: String
+     let bgColor: String
+     let textColors: TextColors
+     let songDuration: Int
+     let lyrics_with_timestamps: [Lyric]
+     let annotations_with_timestamps: [Annotation]
+ }
+
+ // Text color data model
+ struct TextColors: Decodable {
+     let textColor1: String
+     let textColor2: String
+     let textColor3: String
+     let textColor4: String
+ }
+
+ // Lyric data model
+ struct Lyric: Decodable, Identifiable {
+     let id: UUID
+     let lyric: String
+     let timestamp: Double
+ }
+
+struct Annotation: Decodable, Identifiable, Equatable {
+    let id: UUID
+    let annotation: String
+    let lyric: String
+    let timestamp: Double
+}
+ 
+
+struct AnimatedDotRowView: View {
+    var textColors: TextColors
+    var firstLyricTimestamp: Double
+    @State private var opacity: Double = 1.0
+    var body: some View {
+        HStack {
+            ForEach(0..<5) { index in
+                AnimatedDot(color: colorForIndex(index), delay: Double(index) * 0.2, opacity: $opacity)
+            }}
+        .onAppear {
+            withAnimation(Animation.easeIn(duration: 2)) {
+                opacity = 1.0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + firstLyricTimestamp - 2) {
+                withAnimation(Animation.easeOut(duration: 2)) {
+                    opacity = 0.0
+                }}}}
+    private func colorForIndex(_ index: Int) -> Color {
+        let colors = [textColors.textColor1, textColors.textColor2, textColors.textColor3, textColors.textColor4, textColors.textColor1]
+        return Color(colors[index % colors.count])
+    }
+    struct AnimatedDot: View {
+        var color: Color
+        var delay: Double
+        @State private var scale: CGFloat = 0.4
+        @State private var isAnimating = false
+        @Binding var opacity: Double
+        var body: some View {
+            Circle()
+                .fill(isAnimating ? color : color.opacity(0.5))
+                .frame(width: 15, height: 15)
+                .scaleEffect(scale)
+                .opacity(opacity)
+                .animation(Animation.easeInOut(duration: 0.8).repeatForever().delay(delay), value: isAnimating)
+                .onAppear() {
+                    withAnimation {
+                        self.scale = 1
+                    }
+                    withAnimation(Animation.easeInOut(duration: 1).repeatForever().delay(delay)) {
+                        self.isAnimating = true
+                    }}}}}
+
+
+ // Color extension for hex color support
+extension Color {
+    init(_ hex: String) {
+        let hex = hex.trimmingCharacters(in: .alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let r, g, b, a: UInt64
+        switch hex.count {
+        case 3: // RGB (12-bit)
+            (r, g, b, a) = ((int >> 8) * 17, (int >> 4 & 0xF) * 17, (int & 0xF) * 17, 255)
+        case 6: // RGB (24-bit)
+            (r, g, b, a) = (int >> 16, int >> 8 & 0xFF, int & 0xFF, 255)
+        case 8: // ARGB (32-bit)
+            (r, g, b, a) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
+        default:
+            (r, g, b, a) = (0, 0, 0, 0) // Default to black if invalid hex string
+        }
+        self.init(.sRGB, red: Double(r) / 255, green: Double(g) / 255, blue: Double(b) / 255, opacity: Double(a) / 255)
+    }}
+
+
+
+class ObservableAVPlayer: ObservableObject {
+    private var playerLooper: AVPlayerLooper?
+    private var queuePlayer: AVQueuePlayer?
+    
+    @Published var player: AVPlayer?
+ 
+    init(url: URL?) {
+        if let url = url {
+            let playerItem = AVPlayerItem(url: url)
+            self.queuePlayer = AVQueuePlayer(items: [playerItem])
+            self.player = self.queuePlayer  // Assign the queuePlayer to the player
+            self.queuePlayer?.isMuted = true  // Mute the audio
+
+            // Configure the audio session to not interrupt other audio
+            try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
+            try? AVAudioSession.sharedInstance().setActive(true)
+
+            // Loop the video using AVPlayerLooper
+            self.playerLooper = AVPlayerLooper(player: self.queuePlayer!, templateItem: playerItem)
+
+            // Start playing the video immediately
+            self.queuePlayer?.play()
+        } else {
+            // If no video URL is provided, set the player to nil
+            self.player = nil
+        }
+    }
+
+    func stop() {
+        self.queuePlayer?.pause()
+        self.queuePlayer?.seek(to: CMTime.zero)  // Optionally, reset the video to the beginning
+    }
+
+    deinit {
+        self.playerLooper?.disableLooping()
+        self.queuePlayer?.pause()
+        self.queuePlayer?.replaceCurrentItem(with: nil)
+    }
+}
+
+struct UpperRightVideoView: View {
+    @ObservedObject var videoPlayer: ObservableAVPlayer
+    var bgColor: Color
+    var videoSize: CGFloat
+    var displayedImage: UIImage?
+
+    var body: some View {
+        ZStack {
+            // Check if the player has a valid and playable video URL
+            if let player = videoPlayer.player, player.currentItem?.asset.isPlayable == true {
+                VideoPlayer(player: player)
+                    .aspectRatio(contentMode: .fill)
+            }
+            // Display the image if the video URL is not valid or playable
+            else if let image = displayedImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            }
+            // Add a vertical gradient
+            VStack {
+                Spacer()
+                LinearGradient(
+                    gradient: Gradient(colors: [bgColor.opacity(0.8), Color.clear]),
+                    startPoint: .bottom,
+                    endPoint: .top
+                )
+                .frame(height: videoSize * 0.2)
+            }
+            // Add a horizontal gradient
+            HStack {
+                LinearGradient(
+                    gradient: Gradient(colors: [bgColor.opacity(0.8), Color.clear]),
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: videoSize * 0.2)
+                Spacer()
+            }
+        }
+        .frame(width: videoSize, height: videoSize)
+        .background(bgColor)
+        .clipShape(RoundedRectangle(cornerRadius: 30))
+        .shadow(color: .black, radius: 20, x: -5, y: 10)
+    }
+}
+
+
+/*
+struct ModernProgressViewStyle: ProgressViewStyle {
+    var gradientColors: [Color]
+    var trackColor: Color
+    var cornerRadius: CGFloat
+    var padding: CGFloat = 10 // Add a padding property
+    
+    func makeBody(configuration: Configuration) -> some View {
+        let gradient = LinearGradient(gradient: Gradient(colors: gradientColors), startPoint: .leading, endPoint: .trailing)
+        
+        return VStack { // Wrap GeometryReader in VStack
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    // Background track
+                    Capsule()
+                        .fill(trackColor.opacity(0.2))
+                        .frame(height: 11)
+                    
+                    // Foreground track with gradient
+                    Capsule()
+                        .fill(gradient)
+                        .frame(width: (geometry.size.width - 2 * padding) * CGFloat(configuration.fractionCompleted ?? 0), height: 10) // Subtract padding from total width
+                }
+                .cornerRadius(cornerRadius)
+                .padding(.horizontal, padding) // Apply padding to the ZStack
+            }}}}
+
+ 
+ */
+struct AnnotationTimelineView: View {
+    let annotations: [Annotation]
+    let songDuration: Int
+    let textColors: TextColors
+    let currentTime: Double
+    let currentAnnotationId: UUID?
+    let song: Song
+
+    // New padding values for fine-tuning the layout
+    let outerPadding: CGFloat = 10 // Padding around the outer edge of the RoundedRectangle
+    let innerPadding: CGFloat = 2  // Padding between the timeline and the edge of the RoundedRectangle
+
+    var body: some View {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                // Replace the ProgressView with TextWaveProgressView
+                TextWaveProgressView(currentTime: currentTime, totalTime: Double(songDuration) / 1000.0, annotations: annotations)
+                    .frame(height: 60) // Adjust the height as needed
+
+                // Marker Area
+                ZStack(alignment: .leading) {
+                    ForEach(annotations) { annotation in
+                        AnnotationMarkerView(
+                            annotation: annotation,
+                            textColors: textColors,
+                            isActive: annotation.id == currentAnnotationId
+                        )
+                        // Adjust the marker position within the ZStack, considering the inner padding
+                        .position(x: self.calculatePosition(for: annotation, in: geometry.size.width - (innerPadding * 2)), y: 5)
+                    }
+                }
+                // Apply the inner horizontal padding to the ZStack
+                .padding([.leading, .trailing], innerPadding)
+            }
+            // Apply the outer padding to the VStack, and wrap it with a RoundedRectangle background
+            .padding(.horizontal, outerPadding)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(LinearGradient(gradient: Gradient(colors: [Color.white.opacity(0.3), Color.white.opacity(0.1)]), startPoint: .top, endPoint: .bottom))
+                    .shadow(radius: 5) // A subtle shadow for depth
+            )
+        }
+    }
+
+    // Calculate the horizontal position of each marker
+    private func calculatePosition(for annotation: Annotation, in totalWidth: CGFloat) -> CGFloat {
+        let songDurationInSeconds = CGFloat(songDuration) / 1000.0
+        let annotationTimestampInSeconds = CGFloat(annotation.timestamp)
+        let positionRatio = annotationTimestampInSeconds / songDurationInSeconds
+        // Adjust the position calculation to account for the inner padding
+        let position = positionRatio * (totalWidth - (innerPadding * 2)) + innerPadding
+        return position
+    }
+}
+
+
+struct AnnotationMarkerView: View {
+    let annotation: Annotation
+    let textColors: TextColors
+    let isActive: Bool
+    
+    @State private var appear = false
+    @State private var yOffset: CGFloat = -20 // Default offset for inactive annotations
+    
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(isActive ? Color.yellow : Color(textColors.textColor4))
+                .frame(width: isActive ? 25 : 18, height: isActive ? 25 : 18)
+                .overlay(
+                    Circle()
+                        .stroke(Color.white, lineWidth: isActive ? 3 : 1)
+                )
+                .shadow(color: isActive ? Color.yellow.opacity(0.6) : Color.black.opacity(0.5), radius: isActive ? 3 : 1, x: 0, y: 1)
+                .scaleEffect(appear ? 1 : 0.1)
+                .opacity(appear ? 1 : 0)
+                // Apply a smooth transition for the appearance
+                .animation(.easeOut(duration: 0.8), value: appear)
+                .onAppear {
+                    self.appear = true
+                }
+        }
+        .offset(x: 0, y: yOffset)
+        .onAppear {
+            yOffset = isActive ? -30 : -20 // Initial offset based on active state
+        }
+        .onChange(of: isActive) { newValue in
+            // Smoothly transition the offset when an annotation becomes active or inactive
+            withAnimation(.easeOut(duration: 0.8)) {
+                yOffset = newValue ? -30 : -20
+            }
+        }
+    }
+}
+
+
+
+struct TextWaveProgressView: View {
+    let currentTime: Double
+    let totalTime: Double
+    let annotations: [Annotation]
+    @State private var waveOffset = Angle.zero
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                // Background for total time
+                Text(formatTime(totalTime))
+                    .font(.caption)
+                    .foregroundColor(.gray)
+                    .position(x: geometry.size.width - 50, y: geometry.size.height / 2)
+
+                // Wave animation for current time
+                WaveShape(amplitude: 20, frequency: 1.5, phase: waveOffset.radians)
+                    .fill(Color.blue.opacity(0.5))
+                    .frame(height: 40)
+                    .mask(
+                        Text(formatTime(currentTime))
+                            .font(.title)
+                            .bold()
+                    )
+                    .onAppear {
+                        withAnimation(.linear(duration: 2).repeatForever(autoreverses: false)) {
+                            waveOffset = Angle(degrees: 360)
+                        }
+                    }
+
+                // Annotations branching out
+                ForEach(annotations) { annotation in
+                    if currentTime >= annotation.timestamp {
+                        Text(annotation.annotation)
+                            .font(.caption)
+                            .foregroundColor(.white)
+                            .padding(5)
+                            .background(Color.black.opacity(0.7))
+                            .cornerRadius(5)
+                            .offset(x: CGFloat.random(in: -150...150), y: CGFloat.random(in: -30...30))
+                    }
+                }
+            }
+        }
+    }
+
+    private func formatTime(_ time: Double) -> String {
+        let minutes = Int(time) / 60 % 60
+        let seconds = Int(time) % 60
+        return String(format: "%02i:%02i", minutes, seconds)
+    }
+}
+
+struct WaveShape: Shape {
+    var amplitude: CGFloat = 10
+    var frequency: CGFloat = 1.5
+    var phase: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+
+        let width = rect.width
+        let height = rect.height
+        let midHeight = height * 0.5
+
+        path.move(to: CGPoint(x: 0, y: midHeight))
+
+        for x in stride(from: 0, through: width, by: 1) {
+            let relativeX = x / width
+            let normalizedSin = sin(2 * .pi * frequency * relativeX + phase)
+            let y = amplitude * normalizedSin + midHeight
+            path.addLine(to: CGPoint(x: x, y: y))
+        }
+
+        return path
+    }
+
+    var animatableData: CGFloat {
+        get { phase }
+        set { phase = newValue }
+    }
+}
+
+
+
+
+
+
+
+
+struct TitleView: View {
+    let song: Song
+    var uiImage: UIImage?
+    @Binding var elapsedTime: Float
+    @State private var headerState: SnapHeaderState? = .expanded // Control the state of the header
+
+    
+    // Computed property to convert elapsedTime to Binding<CGFloat>
+        private var elapsedTimeAsCGFloat: Binding<CGFloat> {
+            Binding<CGFloat>(
+                get: { CGFloat(self.elapsedTime) },
+                set: { self.elapsedTime = Float($0) }
+            )
+        }
+    
+    
+    var body: some View {
+            ScalingHeaderScrollView(header: {
+                headerView
+            }, content: {
+                contentView
+            })
+            .height(min: 150, max: 300) // Adjust the minimum and maximum height of the header
+            .collapseProgress(elapsedTimeAsCGFloat) // Use the computed property here
+            .allowsHeaderCollapse(true) // Allows the header to be collapsible
+            .snapHeaderToState($headerState) // Use this to programmatically change the header's state
+        }
+
+    private var headerView: some View {
+        VStack {
+            if let image = uiImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 150, height: 150)
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                    .shadow(radius: 8)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(song.title)
+                    .font(.largeTitle)
+                    .fontWeight(.bold)
+                    .lineLimit(nil) // Allow text wrapping if the title is long
+                    .foregroundColor(Color(song.textColors.textColor1))
+                Text(song.artist)
+                    .font(.title)
+                    .fontWeight(.semibold)
+                    .foregroundColor(Color(song.textColors.textColor2))
+                Text(song.album)
+                    .font(.title3)
+                    .foregroundColor(Color(song.textColors.textColor3))
+                Text(String(song.release_date.prefix(4)))
+                    .font(.system(size: 18))
+                    .fontWeight(.semibold)
+                    .foregroundColor(Color(song.textColors.textColor4))
+            }
+            .padding(.leading) // Add padding to the left side of the header content
+            .frame(maxWidth: .infinity, alignment: .leading) // Align header content to the leading edge
+        }
+    }
+
+    private var contentView: some View {
+        Group {
+            Text(song.description)
+                .font(.system(size: 22, weight: .light, design: .rounded))
+                .lineSpacing(1)
+                .multilineTextAlignment(.leading)
+                .foregroundColor(Color(song.textColors.textColor2))
+                .padding() // Add padding around the description
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+
+
+struct TitleView: View {
+    let song: Song
+    var uiImage: UIImage?
+    @Binding var elapsedTime: Float
+    @State private var isExpanded = false
+    @State private var autoCollapseTimer: DispatchWorkItem?
+
+    var displayImage: Bool = false
+
+    let optimalDuration: Double = 15 // seconds
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top) {
+                if displayImage, let image = uiImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .frame(width: 150, height: 150)
+                        .clipShape(RoundedRectangle(cornerRadius: 20))
+                        .shadow(radius: 8)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(song.title)
+                        .font(.largeTitle)
+                        .fontWeight(.bold)
+                        .foregroundColor(Color(song.textColors.textColor1))
+                        .padding(.leading)
+                    Text(song.artist)
+                        .font(.title)
+                        .fontWeight(.semibold)
+                        .foregroundColor(Color(song.textColors.textColor2))
+                        .padding(.leading)
+                    Text(song.album)
+                        .font(.title3)
+                        .foregroundColor(Color(song.textColors.textColor3))
+                        .padding(.leading)
+                    Text(String(song.release_date.prefix(4)))
+                        .font(.system(size: 18))
+                        .fontWeight(.semibold)
+                        .foregroundColor(Color(song.textColors.textColor4))
+                        .padding(.leading)
+                }
+                Spacer()
+            }
+            .frame(maxWidth: .infinity)
+
+            Button(action: {
+                withAnimation(.easeInOut) {
+                    isExpanded.toggle()
+                }
+                resetAutoCollapseTimer()
+            }) {
+                Text(isExpanded ? "Less..." : "More...")
+                    .font(.caption)
+                    .foregroundColor(.blue)
+                    .padding([.trailing, .bottom])
+            }
+
+            Group {
+                if isExpanded {
+                    ScrollView {
+                        Text(song.description)
+                            .font(.system(size: 22, weight: .light, design: .rounded))
+                            .lineSpacing(1)
+                            .multilineTextAlignment(.leading)
+                            .foregroundColor(Color(song.textColors.textColor2))
+                            .padding([.leading, .trailing, .bottom])
+                    }
+                    .frame(maxHeight: 200)
+                    .scaleEffect(1)
+                    .opacity(1)
+                } else {
+                    Text(song.description)
+                        .font(.system(size: 22, weight: .light, design: .rounded).italic())
+                        .lineSpacing(1)
+                        .multilineTextAlignment(.leading)
+                        .foregroundColor(Color(song.textColors.textColor2))
+                        .lineLimit(2)
+                        .padding([.leading, .trailing, .bottom])
+                        .opacity(0.7)
+                        .scaleEffect(0.95)
+                }
+            }
+            .transition(.opacity)
+            .animation(.easeInOut(duration: 1.0), value: isExpanded)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 13)
+                .fill(LinearGradient(gradient: Gradient(colors: [Color(song.bgColor).opacity(0.6), Color.gray.opacity(0.3)]), startPoint: .topLeading, endPoint: .bottomTrailing))
+                .shadow(color: Color.black.opacity(0.6), radius: 10, x: 0, y: 10)
+        )
+        .cornerRadius(10)
+        .padding([.leading, .trailing])
+        .onDisappear {
+            autoCollapseTimer?.cancel()
+        }
+    }
+
+    private func resetAutoCollapseTimer() {
+        autoCollapseTimer?.cancel() // Cancel any existing timer
+        autoCollapseTimer = DispatchWorkItem {
+            withAnimation(.easeInOut) {
+                self.isExpanded = false
+            }
+        }
+        // Schedule a new timer
+        if isExpanded {
+            DispatchQueue.main.asyncAfter(deadline: .now() + optimalDuration, execute: autoCollapseTimer!)
+        }
+    }
+}
+*/
+
+
+struct SongView: View {
+    //var fileName: String
+    //var imageName: String
+    //@State private var selectedVideo: String = "default"
+    let someThreshold = 3
+    @State private var lastScrolledLyricId: UUID? = nil
+    @State private var scrollOffset: CGFloat = 0.3
+    @State private var song: Song
+    @State private var currentLyricId: UUID?
+    @State private var currentAnnotationId: UUID?
+    @State private var currentTime: Double = 0.0
+    @State private var timer: Timer? = nil
+    @State private var nextAnnotationTime: Double?
+    @State private var currentAnnotationStartTime: Double? = nil
+    @State private var annotationQueue: [Annotation] = []
+    @State private var elapsedTime: Float = 0.0
+    @Environment(\.presentationMode) var presentationMode: Binding<PresentationMode>
+    @State private var isTimerRunning = true
+    @State private var lyricsChangedSinceLastScroll = 0
+    @State private var showLyric = false
+    @State private var isVisible = false
+    @StateObject private var videoPlayer: ObservableAVPlayer
+    @State private var displayedImage: UIImage?
+        var videoFilePath: URL?
+        var videoSize: CGFloat = UIScreen.main.bounds.width * 0.35
+
+    init(song: Song, displayedImage: UIImage? = nil, videoFilePath: URL? = nil) {
+            self._song = State(initialValue: song)
+            self._displayedImage = State(initialValue: displayedImage)
+            // Initialize the video player
+            if let videoPath = videoFilePath {
+                self._videoPlayer = StateObject(wrappedValue: ObservableAVPlayer(url: videoPath))
+            } else {
+                self._videoPlayer = StateObject(wrappedValue: ObservableAVPlayer(url: nil))
+            }
+        }
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                BackgroundView(bgColor: Color(song.bgColor), uiImage: displayedImage)
+                    .edgesIgnoringSafeArea(.all)
+
+UpperRightVideoView(videoPlayer: videoPlayer, bgColor: Color(song.bgColor), videoSize: videoSize, displayedImage: displayedImage)
+.frame(width: videoSize, height: videoSize)
+.position(x: videoSize / 2, y: geometry.safeAreaInsets.top)
+                                // Updated positioning for TitleView
+                               TitleView(song: song, uiImage: displayedImage, elapsedTime: $elapsedTime)
+    .frame(width: geometry.size.width * 0.65) // Set the width to 60% of the screen width
+    .position(x: geometry.size.width * 0.35 + (geometry.size.width * 0.65) / 2, 
+              y: geometry.safeAreaInsets.top - 80)
+
+                lyricsScrollView(geometry: geometry)
+                    .frame(height: geometry.size.height * 0.4)
+                    .position(x: geometry.size.width * 0.275, y: geometry.size.height * 0.55)
+
+                annotationView(geometry: geometry)
+                    .frame(height: geometry.size.height / 3)
+                    .position(x: geometry.size.width * 0.5, y: geometry.size.height * 0.875)
+
+                AnnotationTimelineView(annotations: song.annotations_with_timestamps, songDuration: song.songDuration, textColors: song.textColors, currentTime: currentTime, currentAnnotationId: currentAnnotationId, song: song)
+                    .frame(height: 45)
+                    .padding(.bottom)
+                    .position(x: geometry.size.width / 2, y: geometry.size.height - 22.5)
+                
+                playPauseButton()
+                                .position(x: geometry.size.width / 2, y: geometry.size.height - 22.5 - 50)
+
+            }
+            .onAppear {
+                setupTimer()
+            }
+            .onDisappear {
+                self.timer?.invalidate()
+                self.timer = nil
+            }
+        }
+    }
+
+
+    
+    private func playPauseButton() -> some View {
+        Button(action: {
+            self.isTimerRunning.toggle()
+            if self.isTimerRunning {
+                self.setupTimer()
+            } else {
+                self.timer?.invalidate()
+                self.timer = nil
+            }
+        }) {
+            Text(self.isTimerRunning ? "Pause" : "Play")
+                .font(.system(size: 14))
+                .padding(10)
+                .background(Color(song.textColors.textColor4))
+                .foregroundColor(.white)
+                .cornerRadius(8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 20)
+    }
+
+    private func stopButton() -> some View {
+        Button(action: {
+            self.timer?.invalidate()
+            self.timer = nil
+            self.presentationMode.wrappedValue.dismiss()
+        }) {
+            Text("Stop")
+                .font(.system(size: 14))
+                .padding(10)
+                .background(Color(song.textColors.textColor3))
+                .foregroundColor(.white)
+                .cornerRadius(5)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 20)
+    }
+
+    private func lyricsScrollView(geometry: GeometryProxy) -> some View {
+        ScrollViewReader { scrollView in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(song.lyrics_with_timestamps.enumerated()), id: \.element.id) { index, lyric in
+                        lyricView(lyric, index: index, currentLyricId: currentLyricId)
+                    }
+                }
+                .padding(.vertical, 20) // Padding at the top and bottom
+                .onChange(of: currentLyricId) { _ in
+                    if lyricsChangedSinceLastScroll >= someThreshold {
+                        scrollToCurrentLyricIfNeeded(with: scrollView)
+                        lyricsChangedSinceLastScroll = 0
+                    }
+                    lyricsChangedSinceLastScroll += 1
+                }
+            }
+            .frame(width: geometry.size.width * 0.5, height: geometry.size.height * 0.4, alignment: .leading)
+            .padding(.leading, 40)
+            .mask(
+                LinearGradient(gradient: Gradient(colors: [Color.black.opacity(0), Color.black, Color.black, Color.black.opacity(0)]), startPoint: .top, endPoint: .bottom)
+            )
+        }
+    }
+
+
+    private func annotationView(geometry: GeometryProxy) -> some View {
+        VStack {
+            Spacer()
+            if let annotation = song.annotations_with_timestamps.first(where: { $0.id == currentAnnotationId }) {
+                if isVisible {
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 20)
+                            .fill(LinearGradient(gradient: Gradient(colors: [Color(song.bgColor).opacity(0.6), Color.gray.opacity(0.2)]), startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .shadow(color: Color.black.opacity(0.6), radius: 12, x: 0, y: 12)
+                            .frame(width: geometry.size.width * 0.6, height: geometry.size.height / 2.2)
+                            .offset(x: geometry.size.width * 0.2, y: -geometry.size.height / 5)
+
+                        VStack {
+                            Text(annotation.lyric)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .multilineTextAlignment(.center)
+                                .padding()
+                                .font(.system(size: 30, weight: .regular, design: .rounded))
+                                .foregroundColor(Color(song.textColors.textColor1))
+                                .shadow(radius: 5, x: 0, y: 0)
+                                .opacity(showLyric ? 1 : 0)
+                                .offset(x: showLyric ? 0 : -geometry.size.width / 2, y: 0)
+                                .onAppear {
+                                    withAnimation(.spring(response: 0.8, dampingFraction: 0.7, blendDuration: 0.5)) {
+                                        self.showLyric = true
+                                    }
+                                }
+
+                            Text(annotation.annotation)
+                                .frame(maxWidth: .infinity)
+                                .multilineTextAlignment(.center)
+                                .padding()
+                                .background(LinearGradient(gradient: Gradient(colors: [Color(song.textColors.textColor3).opacity(0.4), Color(song.textColors.textColor4).opacity(0.15)]), startPoint: .top, endPoint: .bottom))
+                                .cornerRadius(15)
+                                .shadow(radius: 10)
+                                .font(.system(size: 26, weight: .regular, design: .rounded))
+                                .foregroundColor(Color(song.textColors.textColor2))
+                                .shadow(color: .gray, radius: 1)
+                                .minimumScaleFactor(0.75)
+                                .opacity(currentAnnotationId != nil ? 1 : 0)
+                                .transition(.opacity)
+                                .animation(.easeInOut(duration: 1.5), value: currentAnnotationId)
+
+                            Capsule()
+                                .fill(LinearGradient(gradient: Gradient(colors: [Color.white.opacity(0.8), Color(song.textColors.textColor2), Color(song.textColors.textColor3), Color(song.textColors.textColor4)]), startPoint: .leading, endPoint: .trailing))
+                                .frame(width: calculateProgressWidth(for: annotation, totalWidth: geometry.size.width * 0.4), height: 35)
+                                .animation(.linear(duration: calculateDisplayDuration(for: annotation)), value: currentTime)
+                        }
+                        .frame(width: geometry.size.width * 0.6, height: geometry.size.height / 2)
+                        .offset(x: geometry.size.width * 0.2, y: -geometry.size.height / 5)
+                    }
+                    .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
+                    .animation(.easeOut(duration: 0.8), value: isVisible)
+                }
+            }
+            Spacer()
+        }
+        .onChange(of: currentAnnotationId) { _ in
+            withAnimation(.easeInOut(duration: 1.0)) {
+                isVisible = currentAnnotationId != nil
+            }
+        }
+    }
+
+    private func calculateProgressWidth(for annotation: Annotation, totalWidth: CGFloat) -> CGFloat {
+        let displayDuration = calculateDisplayDuration(for: annotation)
+        let progress = max(0, min(1, (currentTime - (currentAnnotationStartTime ?? 0)) / displayDuration))
+        return totalWidth * CGFloat(progress)
+    }
+
+    private func lyricView(_ lyric: Lyric, index: Int, currentLyricId: UUID?) -> some View {
+        let isCurrentLyric = lyric.id == currentLyricId
+
+        return Group {
+            if currentTime >= song.lyrics_with_timestamps.first?.timestamp ?? 0 {
+                HStack(spacing: 0) { // Adding an HStack to wrap the `Text` view
+                    Text(lyric.lyric)
+                        .id(lyric.id)
+                        .padding(.vertical, 1)
+                        .padding(.horizontal, 4)
+                        .foregroundColor(isCurrentLyric ? Color(song.textColors.textColor1) : Color(song.textColors.textColor2))
+                        .font(.system(size: isCurrentLyric ? 20 : 19, weight: isCurrentLyric ? .bold : .medium, design: .rounded))
+                        .frame(maxWidth: .infinity, alignment: .leading) // Change this line to remove the full width layout
+                        .blur(radius: blurRadiusForIndex(index, currentIndex: song.lyrics_with_timestamps.firstIndex(where: { $0.id == currentLyricId }) ?? 0))
+                        .scaleEffect(isCurrentLyric ? 1.1 : 1.0, anchor: .leading)
+                        .shadow(color: isCurrentLyric ? Color(song.textColors.textColor1) : Color.clear, radius: isCurrentLyric ? 10 : 0)
+                        .brightness(isCurrentLyric ? 0.2 : 0)
+                        .animation(.easeInOut(duration: 0.5), value: isCurrentLyric)
+                        .transition(.opacity)
+                        .animation(.easeInOut(duration: 2.0), value: lyric.id) // Change the duration of the transition
+                    Spacer() // Adding a spacer to take up the remaining width on the right side
+                }
+            } else {
+                if currentTime < song.lyrics_with_timestamps.first?.timestamp ?? 0 && index == 0 {
+                    let firstLyricTimestamp = song.lyrics_with_timestamps.first?.timestamp ?? 0
+                    AnimatedDotRowView(textColors: song.textColors, firstLyricTimestamp: firstLyricTimestamp)
+                        .padding(50)
+                        .frame(maxWidth: .infinity, alignment: .leading) // Change this line to remove the full width layout
+                        .transition(.opacity)
+                        .animation(.easeInOut(duration: 2.0), value: lyric.id)
+                } else {
+                    EmptyView()
+                }
+            }
+        }
+    }
+
+
+         private func distanceToCurrentLyric() -> Int {
+     guard let currentLyricId = currentLyricId,
+           let currentIndex = song.lyrics_with_timestamps.firstIndex(where: { $0.id == currentLyricId }) else {
+         return 0
+     }
+
+     let targetIndex = song.lyrics_with_timestamps.firstIndex(where: { $0.timestamp <= currentTime }) ?? 0
+     return abs(currentIndex - targetIndex)
+ }
+         
+        private func scrollToCurrentLyricIfNeeded(with scrollView: ScrollViewProxy) {
+     guard let currentLyricId = currentLyricId else {
+         return
+     }
+     withAnimation(.easeInOut(duration: 0.3)) {
+         scrollView.scrollTo(currentLyricId, anchor: UnitPoint(x: 0.5, y: scrollOffset))
+     } completion: {
+         lastScrolledLyricId = currentLyricId
+     }
+ }
+         
+         private func getLyricPosition(currentTime: Double, previousLyricTime: Double, nextLyricTime: Double) -> Double {
+                 let position = (currentTime - previousLyricTime) / (nextLyricTime - previousLyricTime)
+                 return position
+             }
+
+         private func blurRadiusForIndex(_ index: Int, currentIndex: Int) -> CGFloat {
+             let distance = abs(currentIndex - index)
+             switch distance {
+             case 0...2:
+                 return 0 // No blur for current lyric and lyrics close to it
+             default:
+                 return CGFloat(distance - 3) * 1.5 // Increasing blur with distance
+             }
+         }
+         
+         private func updateLyrics() {
+     // Find the nearest lyric
+     let nearestLyric = song.lyrics_with_timestamps.min(by: { abs($0.timestamp - currentTime) < abs($1.timestamp - currentTime) })
+
+     if let lyric = nearestLyric, lyric.timestamp <= currentTime {
+         if currentLyricId != lyric.id {
+             currentLyricId = lyric.id
+             //print("Current lyric updated to: \(lyric.lyric)")
+         }
+     }
+ }
+         
+         private func updateAnnotations() {
+             if let currentAnnotation = song.annotations_with_timestamps.first(where: { $0.id == currentAnnotationId }),
+                let startTime = currentAnnotationStartTime,
+                currentTime - startTime < calculateDisplayDuration(for: currentAnnotation) {
+                 return
+             }
+             
+             currentAnnotationId = nil
+             currentAnnotationStartTime = nil
+             displayNextAnnotationFromQueue()
+             queueUpcomingAnnotations()
+         }
+         
+         private func calculateDisplayDuration(for annotation: Annotation) -> Double {
+             let secondsPerCharacter = 0.06
+             return Double(annotation.annotation.count) * secondsPerCharacter
+         }
+         
+    private func isStartOfClump(annotation: Annotation, in annotations: [Annotation]) -> Bool {
+        let clumpThreshold = 8.0
+        let nextAnnotations = annotations.filter { $0.timestamp > annotation.timestamp }
+        guard let nextAnnotation = nextAnnotations.first else { return false }
+        return nextAnnotation.timestamp - annotation.timestamp <= clumpThreshold
+    }
+
+    private func queueUpcomingAnnotations() {
+        let upcomingAnnotations = song.annotations_with_timestamps.filter { annotation in
+            annotation.timestamp > currentTime && !annotationQueue.contains(where: { $0.id == annotation.id })
+        }
+        
+        annotationQueue.append(contentsOf: upcomingAnnotations)
+        annotationQueue.sort(by: { $0.timestamp < $1.timestamp })
+    }
+
+    private func displayNextAnnotationFromQueue() {
+        if let nextAnnotation = annotationQueue.first {
+            let displayDelay = isStartOfClump(annotation: nextAnnotation, in: song.annotations_with_timestamps) ? 3.0 : 0.0
+            if currentTime >= nextAnnotation.timestamp - displayDelay {
+                currentAnnotationId = nextAnnotation.id
+                currentAnnotationStartTime = currentTime
+                annotationQueue.removeFirst()
+            }
+        }
+    }
+    private func setupTimer() {
+        self.timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            // Directly access self, it's safe within SwiftUI's view struct
+            self.currentTime += 0.1
+            self.updateLyrics()
+            self.updateAnnotations()
+
+            // Check if the song has ended
+            if self.currentTime >= Double(self.song.songDuration) / 1000.0 {
+                self.timer?.invalidate()
+                self.timer = nil
+                self.videoPlayer.stop() // Stop the video player
+                self.presentationMode.wrappedValue.dismiss() // Navigate back to the Welcome screen
+            }
+        }
+    }
+         }
+
+
+@main
+struct _2_01App: App {
+   var body: some Scene {
+       WindowGroup {
+           WelcomeView()
+               .preferredColorScheme(.dark)
+       }
+   }
+}
+
+
+

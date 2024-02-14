@@ -78,12 +78,12 @@ async def fetch_variant_playlist_url(playlist_url):
         if playlists:
             playlists.sort(key=lambda p: abs(p.stream_info.resolution[0] - 720))
             return urljoin(playlist_url, playlists[0].uri)
-    print("No variant playlist found.")
+    #print("No variant playlist found.")
     return None
 
 
 async def fetch_playlist_url(url):
-    max_redirects = 5  # Set a reasonable limit for redirects
+    max_redirects = 4  # Set a reasonable limit for redirects
     async with aiohttp.ClientSession() as session:
         for _ in range(max_redirects):
             async with session.get(url, allow_redirects=False) as response:
@@ -156,22 +156,3 @@ async def download_video_segments(segment_urls, video_dir, song_title, artist_na
 DEVELOPER_TOKEN = "eyJhbGciOiJFUzI1NiIsImtpZCI6IjYyMlcyTVVVV1EiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJVNEdMUUdGTlQzIiwiaWF0IjoxNjk3MjQ4NDQ4LCJleHAiOjE3MTAyMDg0NDh9.XMe-WEuuAJS_LOirXG6yU8CZW1RL6Lw4cwxhc405rvZm_LesEsaLoqNnZ9l_n3SQ0eOqUQEsWXEPNZYJ5wdZXw"
 
 
-'''
-# Assuming appleMedia.py is the name of your script and it's in your PYTHONPATH
-# If it's not, you might need to adjust the import statement accordingly
-from appleMedia import download_media, download_image, download_video_segments
-
-# The song title and artist you're interested in
-SONG_TITLE = "wishing well"
-ARTIST_NAME = "juice wrld"
-
-
-async def main():
-    # Start by searching for the song and attempting to download the image and video
-    await download_media(SONG_TITLE, ARTIST_NAME, DEVELOPER_TOKEN)
-
-
-# Run the main function
-if __name__ == "__main__":
-    asyncio.run(main())
-'''
